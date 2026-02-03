@@ -1,0 +1,31 @@
+name: Handle PR Link
+
+on:
+  repository_dispatch:
+    types: [pr-event]
+
+jobs:
+  link-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run PR linking
+        run: go run cmd/link-pr/main.go
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROJECT_MAINTENANCE_TOKEN }}
+          GITHUB_ORG: storacha
+          PROJECT_NUMBER: 1
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DUPLICATE_SIMILARITY: 0.95
+          TARGET_STATUSES: "In Progress, Sprint Backlog"
+          PR_REPO: ${{ github.event.client_payload.pr_repo }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          PR_TITLE: ${{ github.event.client_payload.pr_title }}
+          PR_BODY: ${{ github.event.client_payload.pr_body }}

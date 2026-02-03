@@ -1,0 +1,47 @@
+name: Triage Stale Issues
+
+on:
+  schedule:
+    # Run every day at 9 AM UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch: # Allow manual triggering
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage-stale:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run stale issue triage
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROJECT_MAINTENANCE_TOKEN }}
+          GITHUB_ORG: storacha
+          PROJECT_NUMBER: 1
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          STALENESS_THRESHOLD_DAYS: 180
+          TARGET_STATUSES: "Inbox, Backlog, Sprint Backlog, In Progress, PR Review"
+        run: go run cmd/triage-stale/main.go
+
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-report-${{ github.run_number }}
+          path: |
+            *.log
+          retention-days: 30

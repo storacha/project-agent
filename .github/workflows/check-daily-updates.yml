@@ -1,0 +1,29 @@
+name: Check Daily Updates
+
+on:
+  schedule:
+    - cron: '0 14 * * *'  # Daily at 2 PM UTC (9 AM EST / 6 AM PST)
+  workflow_dispatch:
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run daily update check
+        run: go run cmd/check-daily-updates/main.go
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROJECT_MAINTENANCE_TOKEN }}
+          GITHUB_ORG: storacha
+          PROJECT_NUMBER: 1
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          USER_MAPPINGS: ${{ secrets.USER_MAPPINGS }}
+          DAILY_UPDATE_THRESHOLD: 3
