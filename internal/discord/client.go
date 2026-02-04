@@ -79,9 +79,29 @@ func (c *Client) SendStaleIssuesReport(ctx context.Context, staleIssues []StaleI
 	}
 
 	// Group issues by status
-	byStatus := make(map[string][]StaleIssue)
+	byStatus := make(map[string]map[string][]StaleIssue)
 	for _, stale := range staleIssues {
-		byStatus[stale.Issue.ProjectItem.StatusValue] = append(byStatus[stale.Issue.ProjectItem.StatusValue], stale)
+		statusMap := byStatus[stale.Issue.ProjectItem.StatusValue]
+		if statusMap == nil {
+			statusMap = make(map[string][]StaleIssue)
+			byStatus[stale.Issue.ProjectItem.StatusValue] = statusMap
+		}
+		if len(stale.AssignedTo) > 0 {
+			mentions := ""
+			for i, githubUser := range stale.AssignedTo {
+				if discordID, ok := userMappings[githubUser]; ok {
+					mentions += fmt.Sprintf("<@%s>", discordID)
+				} else {
+					mentions += fmt.Sprintf("@%s", githubUser)
+				}
+				if i < len(stale.AssignedTo)-1 {
+					mentions += " "
+				}
+			}
+			statusMap[mentions] = append(statusMap[mentions], stale)
+		} else {
+			statusMap["Unassigned"] = append(statusMap["Unassigned"], stale)
+		}
 	}
 
 	// Build embed
@@ -91,39 +111,31 @@ func (c *Client) SendStaleIssuesReport(ctx context.Context, staleIssues []StaleI
 
 	for _, status := range statuses {
 
-		issues := byStatus[status]
-		if len(issues) == 0 {
+		byAssignee := byStatus[status]
+		if len(byAssignee) == 0 {
 			continue
 		}
 
-		description := fmt.Sprintf("%d issues haven't been updated in 3+ days\n\n", len(issues))
-		for _, stale := range issues {
-			// Build issue line
-			line := fmt.Sprintf("• [%s #%d](%s) %s", stale.Issue.RepositoryName, stale.Issue.Number, stale.Issue.URL, stale.Issue.Title)
+		description := fmt.Sprintf("%d issues haven't been updated in 3+ days\n\n", len(byAssignee))
+		for assignee, issues := range byAssignee {
+			description += fmt.Sprintf("**%s**\n\n", assignee)
+			for _, stale := range issues {
+				// Build issue line
+				line := fmt.Sprintf("• [%s #%d](%s) %s", stale.Issue.RepositoryName, stale.Issue.Number, stale.Issue.URL, stale.Issue.Title)
 
-			// Add days since update
-			line += fmt.Sprintf(" *(%d days)*", stale.DaysSinceUpdate)
+				// Add days since update
+				line += fmt.Sprintf(" *(%d days)*", stale.DaysSinceUpdate)
 
-			// Add assignee mentions if any
-			if len(stale.AssignedTo) > 0 {
-				mentions := ""
-				for _, githubUser := range stale.AssignedTo {
-					if discordID, ok := userMappings[githubUser]; ok {
-						mentions += fmt.Sprintf(" <@%s>", discordID)
-					} else {
-						mentions += fmt.Sprintf(" @%s", githubUser)
-					}
-				}
-				line += mentions
+				description += line + "\n"
 			}
-			description += line + "\n"
+			description += "\n"
 		}
 		embeds = append(embeds, Embed{
 			Title:       status,
 			Description: description,
 			Color:       0xFF9900, // Orange
 			Timestamp:   time.Now().Format("2006-01-02T15:04:05Z"),
-			Fields:      []Field{},
+			Fields:      nil,
 		})
 	}
 
@@ -350,4 +362,76 @@ func (c *Client) SendUnassignedIssuesDM(ctx context.Context, discordUserID strin
 	}
 
 	return c.sendBotMessage(ctx, dmChannel, msg)
+}
+
+// ThreadResponse represents a Discord thread creation response
+type ThreadResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// CreateStandupThread creates a new thread in the standup channel and posts the standup prompt
+func (c *Client) CreateStandupThread(ctx context.Context, channelID, roleID string) error {
+	if c.botToken == "" {
+		return fmt.Errorf("bot token not configured")
+	}
+
+	// Step 1: Create the thread
+	now := time.Now()
+	threadName := fmt.Sprintf("Async Standup - %s", now.Format("Monday, January 2, 2006"))
+
+	threadPayload := map[string]interface{}{
+		"name":                threadName,
+		"auto_archive_duration": 1440, // 24 hours
+		"type":                11,     // Public thread
+	}
+
+	jsonPayload, err := json.Marshal(threadPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal thread payload: %w", err)
+	}
+
+	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/threads", channelID)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return fmt.Errorf("failed to create thread request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bot "+c.botToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to create thread: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("thread creation returned non-success status: %d, body: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var threadResp ThreadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&threadResp); err != nil {
+		return fmt.Errorf("failed to decode thread response: %w", err)
+	}
+
+	// Step 2: Post the standup message in the thread
+	roleMention := ""
+	if roleID != "" {
+		roleMention = fmt.Sprintf("<@&%s> ", roleID)
+	}
+
+	content := fmt.Sprintf("%sGood morning! 🌅\n\n", roleMention)
+	content += "**It's time for async standup!** Please share:\n\n"
+	content += "1️⃣ What did you work on recently?\n"
+	content += "2️⃣ What are you working on today?\n"
+	content += "3️⃣ Any blockers or help needed?\n\n"
+	content += "Reply to this thread with your update. Thanks! 🙏"
+
+	msg := map[string]interface{}{
+		"content": content,
+	}
+
+	return c.sendBotMessage(ctx, threadResp.ID, msg)
 }

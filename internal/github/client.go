@@ -11,24 +11,26 @@ import (
 
 // Client handles GitHub API interactions
 type Client struct {
-	client        *githubv4.Client
-	org           string
-	projectNumber int
-	projectID     string
-	statusFieldID string
+	client            *githubv4.Client
+	org               string
+	projectNumber     int
+	projectID         string
+	statusFieldID     string
+	initiativeFieldID string
 }
 
 // Issue represents a GitHub issue with project metadata
 type Issue struct {
-	Number         int
-	Title          string
-	Body           string
-	URL            string
-	UpdatedAt      time.Time
-	Assignees      []string // GitHub usernames
-	ProjectItem    ProjectItemInfo
-	RepositoryID   string
-	RepositoryName string
+	Number          int
+	Title           string
+	Body            string
+	URL             string
+	UpdatedAt       time.Time
+	Assignees       []string // GitHub usernames
+	ProjectItem     ProjectItemInfo
+	RepositoryID    string
+	RepositoryName  string
+	RepositoryOwner string
 }
 
 // ProjectItemInfo contains project-specific metadata for an issue
@@ -83,6 +85,10 @@ func (c *Client) fetchProjectMetadata(ctx context.Context) error {
 								Name githubv4.String
 							}
 						} `graphql:"... on ProjectV2SingleSelectField"`
+						TextField struct {
+							ID   githubv4.ID
+							Name githubv4.String
+						} `graphql:"... on ProjectV2Field"`
 					}
 				} `graphql:"fields(first: 20)"`
 			} `graphql:"projectV2(number: $projectNumber)"`
@@ -104,7 +110,7 @@ func (c *Client) fetchProjectMetadata(ctx context.Context) error {
 	}
 	c.projectID = projectID
 
-	// Find the Status field
+	// Find the Status and Initiative fields
 	for _, field := range query.Organization.ProjectV2.Fields.Nodes {
 		if field.TypeName == "ProjectV2SingleSelectField" {
 			if string(field.SingleSelectField.Name) == "Status" {
@@ -113,13 +119,24 @@ func (c *Client) fetchProjectMetadata(ctx context.Context) error {
 					return fmt.Errorf("failed to convert status field ID to string")
 				}
 				c.statusFieldID = statusFieldID
-				break
+			}
+		} else if field.TypeName == "ProjectV2Field" {
+			if string(field.TextField.Name) == "Initiative" {
+				initiativeFieldID, ok := field.TextField.ID.(string)
+				if !ok {
+					return fmt.Errorf("failed to convert initiative field ID to string")
+				}
+				c.initiativeFieldID = initiativeFieldID
 			}
 		}
 	}
 
 	if c.statusFieldID == "" {
 		return fmt.Errorf("could not find Status field in project")
+	}
+
+	if c.initiativeFieldID == "" {
+		return fmt.Errorf("could not find Initiative field in project")
 	}
 
 	return nil
@@ -652,4 +669,342 @@ func (c *Client) getIssueNodeID(ctx context.Context, issue Issue) (githubv4.ID, 
 	}
 
 	return query.Node.Repository.Issue.ID, nil
+}
+
+// GetInitiativeIssues retrieves all issues with GitHub Issue Type = "Initiative"
+func (c *Client) GetInitiativeIssues(ctx context.Context) ([]Issue, error) {
+	var issues []Issue
+	var cursor *githubv4.String
+
+	for {
+		var query struct {
+			Node struct {
+				ProjectV2 struct {
+					Items struct {
+						PageInfo struct {
+							HasNextPage githubv4.Boolean
+							EndCursor   githubv4.String
+						}
+						Nodes []struct {
+							ID      githubv4.ID
+							Content struct {
+								TypeName string `graphql:"__typename"`
+								Issue    struct {
+									Number    githubv4.Int
+									Title     githubv4.String
+									Body      githubv4.String
+									URL       githubv4.URI
+									UpdatedAt githubv4.DateTime
+									IssueType struct {
+										Name githubv4.String
+									}
+									Assignees struct {
+										Nodes []struct {
+											Login githubv4.String
+										}
+									} `graphql:"assignees(first: 10)"`
+									Repository struct {
+										ID    githubv4.ID
+										Name  githubv4.String
+										Owner struct {
+											Login githubv4.String
+										}
+									}
+								} `graphql:"... on Issue"`
+							}
+							StatusField struct {
+								TypeName          string `graphql:"__typename"`
+								SingleSelectValue struct {
+									ID   githubv4.String
+									Name githubv4.String
+								} `graphql:"... on ProjectV2ItemFieldSingleSelectValue"`
+							} `graphql:"statusField: fieldValueByName(name: \"Status\")"`
+						}
+					} `graphql:"items(first: 100, after: $cursor)"`
+				} `graphql:"... on ProjectV2"`
+			} `graphql:"node(id: $projectID)"`
+		}
+
+		variables := map[string]interface{}{
+			"projectID": githubv4.ID(c.projectID),
+			"cursor":    cursor,
+		}
+
+		if err := c.client.Query(ctx, &query, variables); err != nil {
+			return nil, fmt.Errorf("failed to query project items: %w", err)
+		}
+
+		for _, item := range query.Node.ProjectV2.Items.Nodes {
+			// Only process issues (not PRs or draft issues)
+			if item.Content.TypeName != "Issue" {
+				continue
+			}
+
+			// Only process items with GitHub Issue Type = "Initiative"
+			issueTypeName := string(item.Content.Issue.IssueType.Name)
+			if issueTypeName != "Initiative" {
+				continue
+			}
+
+			repoID, ok := item.Content.Issue.Repository.ID.(string)
+			if !ok {
+				continue // Skip if we can't get repo ID
+			}
+
+			itemID, ok := item.ID.(string)
+			if !ok {
+				continue // Skip if we can't get item ID
+			}
+
+			// Extract assignees
+			assignees := []string{}
+			for _, assignee := range item.Content.Issue.Assignees.Nodes {
+				assignees = append(assignees, string(assignee.Login))
+			}
+
+			statusName := string(item.StatusField.SingleSelectValue.Name)
+
+			issues = append(issues, Issue{
+				Number:          int(item.Content.Issue.Number),
+				Title:           string(item.Content.Issue.Title),
+				Body:            string(item.Content.Issue.Body),
+				URL:             item.Content.Issue.URL.String(),
+				UpdatedAt:       item.Content.Issue.UpdatedAt.Time,
+				Assignees:       assignees,
+				RepositoryID:    repoID,
+				RepositoryName:  string(item.Content.Issue.Repository.Name),
+				RepositoryOwner: string(item.Content.Issue.Repository.Owner.Login),
+				ProjectItem: ProjectItemInfo{
+					ID:            itemID,
+					StatusValue:   statusName,
+					StatusValueID: string(item.StatusField.SingleSelectValue.ID),
+					StatusFieldID: c.statusFieldID,
+				},
+			})
+		}
+
+		if !query.Node.ProjectV2.Items.PageInfo.HasNextPage {
+			break
+		}
+
+		cursor = &query.Node.ProjectV2.Items.PageInfo.EndCursor
+	}
+
+	return issues, nil
+}
+
+// SubIssue represents a sub-issue with owner, repo, and number
+type SubIssue struct {
+	Owner  string
+	Repo   string
+	Number int
+	Title  string
+}
+
+// GetSubIssuesRecursive fetches all sub-issues (and descendants) for a given issue
+func (c *Client) GetSubIssuesRecursive(ctx context.Context, owner, repo string, number int) ([]SubIssue, error) {
+	var allSubIssues []SubIssue
+	visited := make(map[string]bool)
+
+	var fetchSubIssues func(string, string, int) error
+	fetchSubIssues = func(owner, repo string, number int) error {
+		key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+		if visited[key] {
+			return nil // Avoid infinite loops
+		}
+		visited[key] = true
+
+		var query struct {
+			Repository struct {
+				Issue struct {
+					SubIssues struct {
+						Nodes []struct {
+							Number githubv4.Int
+							Title  githubv4.String
+							Repository struct {
+								Name  githubv4.String
+								Owner struct {
+									Login githubv4.String
+								}
+							}
+						}
+					} `graphql:"subIssues(first: 100)"`
+				} `graphql:"issue(number: $number)"`
+			} `graphql:"repository(owner: $owner, name: $repo)"`
+		}
+
+		variables := map[string]interface{}{
+			"owner":  githubv4.String(owner),
+			"repo":   githubv4.String(repo),
+			"number": githubv4.Int(number),
+		}
+
+		if err := c.client.Query(ctx, &query, variables); err != nil {
+			return fmt.Errorf("failed to query sub-issues for %s/%s#%d: %w", owner, repo, number, err)
+		}
+
+		for _, node := range query.Repository.Issue.SubIssues.Nodes {
+			subIssue := SubIssue{
+				Owner:  string(node.Repository.Owner.Login),
+				Repo:   string(node.Repository.Name),
+				Number: int(node.Number),
+				Title:  string(node.Title),
+			}
+			allSubIssues = append(allSubIssues, subIssue)
+
+			// Recursively fetch sub-issues of this sub-issue
+			if err := fetchSubIssues(subIssue.Owner, subIssue.Repo, subIssue.Number); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+
+	if err := fetchSubIssues(owner, repo, number); err != nil {
+		return nil, err
+	}
+
+	return allSubIssues, nil
+}
+
+// AddIssueToProject adds an issue to the project with "Inbox" status
+func (c *Client) AddIssueToProject(ctx context.Context, owner, repo string, number int) (*Issue, error) {
+	// First, get the issue and repository IDs
+	var query struct {
+		Repository struct {
+			ID    githubv4.ID
+			Issue struct {
+				ID        githubv4.ID
+				Number    githubv4.Int
+				Title     githubv4.String
+				Body      githubv4.String
+				URL       githubv4.URI
+				UpdatedAt githubv4.DateTime
+			} `graphql:"issue(number: $number)"`
+		} `graphql:"repository(owner: $owner, name: $repo)"`
+	}
+
+	variables := map[string]interface{}{
+		"owner":  githubv4.String(owner),
+		"repo":   githubv4.String(repo),
+		"number": githubv4.Int(number),
+	}
+
+	if err := c.client.Query(ctx, &query, variables); err != nil {
+		return nil, fmt.Errorf("failed to query issue: %w", err)
+	}
+
+	repoID, ok := query.Repository.ID.(string)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert repository ID")
+	}
+
+	issueNodeID := query.Repository.Issue.ID
+
+	// Check if issue is already in the project
+	existingItem, err := c.getProjectItemForIssue(ctx, issueNodeID)
+	if err == nil && existingItem != nil {
+		// Issue is already in project, return it
+		return &Issue{
+			Number:       int(query.Repository.Issue.Number),
+			Title:        string(query.Repository.Issue.Title),
+			Body:         string(query.Repository.Issue.Body),
+			URL:          query.Repository.Issue.URL.String(),
+			UpdatedAt:    query.Repository.Issue.UpdatedAt.Time,
+			RepositoryID: repoID,
+			ProjectItem:  *existingItem,
+		}, nil
+	}
+
+	// Add the issue to the project
+	var addMutation struct {
+		AddProjectV2ItemById struct {
+			Item struct {
+				ID githubv4.ID
+			}
+		} `graphql:"addProjectV2ItemById(input: $input)"`
+	}
+
+	addInput := githubv4.AddProjectV2ItemByIdInput{
+		ProjectID: githubv4.ID(c.projectID),
+		ContentID: issueNodeID,
+	}
+
+	if err := c.client.Mutate(ctx, &addMutation, addInput, nil); err != nil {
+		return nil, fmt.Errorf("failed to add issue to project: %w", err)
+	}
+
+	itemID, ok := addMutation.AddProjectV2ItemById.Item.ID.(string)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert item ID")
+	}
+
+	// Set status to "Inbox"
+	inboxOptionID, err := c.getStatusOptionID(ctx, "Inbox")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Inbox option ID: %w", err)
+	}
+
+	var updateMutation struct {
+		UpdateProjectV2ItemFieldValue struct {
+			ProjectV2Item struct {
+				ID githubv4.ID
+			} `graphql:"projectV2Item"`
+		} `graphql:"updateProjectV2ItemFieldValue(input: $input)"`
+	}
+
+	updateInput := githubv4.UpdateProjectV2ItemFieldValueInput{
+		ProjectID: githubv4.ID(c.projectID),
+		ItemID:    githubv4.ID(itemID),
+		FieldID:   githubv4.ID(c.statusFieldID),
+		Value: githubv4.ProjectV2FieldValue{
+			SingleSelectOptionID: githubv4.NewString(githubv4.String(inboxOptionID)),
+		},
+	}
+
+	if err := c.client.Mutate(ctx, &updateMutation, updateInput, nil); err != nil {
+		return nil, fmt.Errorf("failed to set status to Inbox: %w", err)
+	}
+
+	return &Issue{
+		Number:       int(query.Repository.Issue.Number),
+		Title:        string(query.Repository.Issue.Title),
+		Body:         string(query.Repository.Issue.Body),
+		URL:          query.Repository.Issue.URL.String(),
+		UpdatedAt:    query.Repository.Issue.UpdatedAt.Time,
+		RepositoryID: repoID,
+		ProjectItem: ProjectItemInfo{
+			ID:            itemID,
+			StatusValue:   "Inbox",
+			StatusValueID: inboxOptionID,
+			StatusFieldID: c.statusFieldID,
+		},
+	}, nil
+}
+
+// UpdateInitiativeField sets the Initiative text field for a project item
+func (c *Client) UpdateInitiativeField(ctx context.Context, issue Issue, initiativeTitle string) error {
+	var mutation struct {
+		UpdateProjectV2ItemFieldValue struct {
+			ProjectV2Item struct {
+				ID githubv4.ID
+			} `graphql:"projectV2Item"`
+		} `graphql:"updateProjectV2ItemFieldValue(input: $input)"`
+	}
+
+	input := githubv4.UpdateProjectV2ItemFieldValueInput{
+		ProjectID: githubv4.ID(c.projectID),
+		ItemID:    githubv4.ID(issue.ProjectItem.ID),
+		FieldID:   githubv4.ID(c.initiativeFieldID),
+		Value: githubv4.ProjectV2FieldValue{
+			Text: githubv4.NewString(githubv4.String(initiativeTitle)),
+		},
+	}
+
+	if err := c.client.Mutate(ctx, &mutation, input, nil); err != nil {
+		return fmt.Errorf("failed to update Initiative field: %w", err)
+	}
+
+	return nil
 }

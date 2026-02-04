@@ -22,6 +22,8 @@ type Config struct {
 	// Discord configuration
 	DiscordWebhookURL       string
 	DiscordBotToken         string
+	DiscordStandupChannelID string            // Discord channel ID for async standup threads
+	DiscordStandupRoleID    string            // Discord role ID to mention in standup threads
 	UserMappings            map[string]string // GitHub username -> Discord user ID
 	UnassignedIssuesUserID  string            // Discord user ID to receive unassigned issues
 	DailyUpdateThreshold    int               // Days since last update to flag as stale
@@ -111,6 +113,8 @@ func LoadFromEnv() (*Config, error) {
 	// Discord configuration (optional for most commands)
 	cfg.DiscordWebhookURL = os.Getenv("DISCORD_WEBHOOK_URL")
 	cfg.DiscordBotToken = os.Getenv("DISCORD_BOT_TOKEN")
+	cfg.DiscordStandupChannelID = os.Getenv("DISCORD_STANDUP_CHANNEL_ID")
+	cfg.DiscordStandupRoleID = os.Getenv("DISCORD_STANDUP_ROLE_ID")
 	cfg.UnassignedIssuesUserID = os.Getenv("UNASSIGNED_ISSUES_USER_ID")
 
 	if updateThresholdStr := os.Getenv("DAILY_UPDATE_THRESHOLD"); updateThresholdStr != "" {

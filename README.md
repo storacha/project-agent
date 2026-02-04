@@ -6,7 +6,9 @@ An automated GitHub backlog maintenance agent that helps keep your GitHub Projec
 2. **Detecting duplicates** - Uses AI (Gemini) to find semantically similar issues that may be duplicates
 3. **Linking PRs to issues** - Automatically detects issue references in PRs and moves issues to PR Review status
 4. **Daily update reminders** - Sends Discord notifications for active issues not updated in 3+ days
-5. **Adding helpful comments** - Explains why actions were taken and provides guidance for maintainers
+5. **Processing Initiatives** - Automatically adds sub-issues from Initiative-type issues to the project and tags them
+6. **Async standup threads** - Creates Discord threads for team standup updates (Tue/Wed/Thu)
+7. **Adding helpful comments** - Explains why actions were taken and provides guidance for maintainers
 
 ## Features
 
@@ -15,6 +17,8 @@ An automated GitHub backlog maintenance agent that helps keep your GitHub Projec
 - ✅ **Duplicate Detection** - Uses Gemini AI to find similar issues (runs weekly)
 - ✅ **PR-to-Issue Linking** - Automatically links PRs to issues and moves them to PR Review (runs on PR open/edit)
 - ✅ **Daily Update Checks** - Discord notifications for active issues needing attention (runs daily)
+- ✅ **Initiative Processing** - Automatically adds sub-issues from Initiatives to the project (runs daily)
+- ✅ **Async Standup Threads** - Creates Discord threads for team standup updates (Tue/Wed/Thu)
 - ✅ **Flexible Scheduling** - Different cron schedules for different tasks
 - ✅ **Discord Integration** - Rich embedded messages with @mentions
 - ✅ **Configurable** - Adjust thresholds and behavior via environment variables
@@ -124,6 +128,12 @@ go run cmd/deploy-pr-workflow/main.go
 # Scan and process all existing open PRs (in dry-run mode)
 go run cmd/scan-open-prs/main.go
 
+# Run process-initiatives (in dry-run mode)
+go run cmd/process-initiatives/main.go
+
+# Run async-standup (in dry-run mode)
+go run cmd/async-standup/main.go
+
 # Run for real (remove DRY_RUN)
 unset DRY_RUN
 go run cmd/triage-stale/main.go
@@ -144,6 +154,8 @@ go run cmd/triage-stale/main.go
 | `DAILY_UPDATE_THRESHOLD` | No | 3 | Days since last update to flag for daily check |
 | `DISCORD_WEBHOOK_URL` | No | - | Discord webhook URL for channel notifications |
 | `DISCORD_BOT_TOKEN` | No | - | Discord bot token for sending DMs |
+| `DISCORD_STANDUP_CHANNEL_ID` | No | - | Discord channel ID for async standup threads |
+| `DISCORD_STANDUP_ROLE_ID` | No | - | Discord role ID to mention in standup threads |
 | `USER_MAPPINGS` | No | {} | JSON mapping of GitHub usernames to Discord IDs |
 | `UNASSIGNED_ISSUES_USER_ID` | No | - | Discord user ID to receive unassigned issues report |
 | `TARGET_STATUSES` | No | "Inbox, Backlog, Sprint Backlog, In Progress, PR Review" | Comma-separated list of statuses to analyze |
@@ -363,13 +375,82 @@ Please assign these issues to the appropriate team members. Thanks! 🙏
 - Bot needs "Send Messages" permission
 - Set `UNASSIGNED_ISSUES_USER_ID` to receive unassigned issues report
 
+### 6. Initiative Processing
+
+Every day, the agent processes Initiative-type issues and their sub-issues.
+
+The agent:
+1. **Fetches all Initiatives** - Queries the project for all issues with GitHub organization-level issue type = "Initiative"
+2. **Recursively fetches sub-issues** - Uses GitHub's `subIssues` field to get all sub-issues and descendants
+3. **Adds sub-issues to project** - Adds each sub-issue to the project with "Inbox" status (if not already in project)
+4. **Updates Initiative field** - Sets the "Initiative" text field to the parent Initiative's title
+5. **Updates on changes** - Re-runs daily to capture initiative title changes and newly added sub-issues
+
+**Requirements:**
+- Your organization must have GitHub issue types configured ([see docs](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/managing-issue-types-in-an-organization))
+- At least one issue type named "Initiative"
+- Your project must have a text field named "Initiative"
+- Initiatives must have sub-issues added via GitHub's sub-issues feature
+
+**Example scenario:**
+
+Initiative #330 "Warm Storage Launch" has 76 sub-issues across multiple repositories:
+- storacha/project-tracking#333: PDP Enablement
+- storacha/piri#39: PDP Unit Tests
+- storacha/guppy#12: bring the code up to date
+- ...and 73 more
+
+The agent will:
+- Add all 76 sub-issues to the project (if not already present) with status "Inbox"
+- Set the "Initiative" field to "Warm Storage Launch" for all of them
+- Update the Initiative field daily in case the Initiative title changes
+
+### 7. Async Standup Threads
+
+On Tuesday, Wednesday, and Thursday, the agent creates a new Discord thread for async standup.
+
+The agent:
+1. **Creates a new thread** in the configured "Async Standup" channel
+2. **Names the thread** with the current date (e.g., "Async Standup - Tuesday, February 3, 2026")
+3. **Posts a standup prompt** with:
+   - Role mention (e.g., @Storacha Team) if configured
+   - Prompts for: what you worked on, what you're working on today, and any blockers
+4. **Auto-archives after 24 hours** to keep the channel organized
+
+**Requirements:**
+- Discord Bot (not webhook) with permissions to:
+  - Create public threads
+  - Send messages in threads
+- Set `DISCORD_STANDUP_CHANNEL_ID` to the channel where threads should be created
+- Set `DISCORD_STANDUP_ROLE_ID` to the role to mention (optional)
+
+**Example thread message:**
+
+```
+@Storacha Team Good morning! 🌅
+
+**It's time for async standup!** Please share:
+
+1️⃣ What did you work on recently?
+2️⃣ What are you working on today?
+3️⃣ Any blockers or help needed?
+
+Reply to this thread with your update. Thanks! 🙏
+```
+
+**How to get Discord IDs:**
+- **Channel ID**: Enable Developer Mode in Discord, right-click the channel, select "Copy Channel ID"
+- **Role ID**: Type `\@RoleName` in any channel and copy the numeric ID from the output
+
 ## GitHub Actions Workflows
 
 The agent runs automatically on different schedules:
 
 - **Stale Issue Triage**: Daily at 9 AM UTC
 - **Duplicate Detection**: Weekly on Mondays at 10 AM UTC
+- **Initiative Processing**: Daily at 10 AM UTC
 - **Daily Update Checks**: Daily at 2 PM UTC (9 AM EST / 6 AM PST)
+- **Async Standup**: Tuesday, Wednesday, Thursday at 2 PM UTC (9 AM EST / 6 AM PST)
 - **Weekly DMs**: Mondays at 2 PM UTC (9 AM EST / 6 AM PST)
 - **PR-to-Issue Linking**: Triggered when PRs are opened/edited in any org repository
 
@@ -388,12 +469,16 @@ project-agent/
 │   │   └── main.go                  # Stale issue triage command
 │   ├── detect-duplicates/
 │   │   └── main.go                  # Duplicate detection command
+│   ├── process-initiatives/
+│   │   └── main.go                  # Initiative processing command
 │   ├── link-pr/
 │   │   └── main.go                  # PR-to-issue linking command
 │   ├── scan-open-prs/
 │   │   └── main.go                  # Scan all open PRs across org
 │   ├── check-daily-updates/
 │   │   └── main.go                  # Daily update check with Discord
+│   ├── async-standup/
+│   │   └── main.go                  # Async standup thread creator
 │   ├── send-weekly-dms/
 │   │   └── main.go                  # Weekly DM distribution
 │   └── deploy-pr-workflow/
@@ -402,8 +487,10 @@ project-agent/
 │   ├── tasks/
 │   │   ├── stale_triage.go          # Stale issue triage logic
 │   │   ├── duplicate_detection.go   # Duplicate detection logic
+│   │   ├── process_initiatives.go   # Initiative processing logic
 │   │   ├── pr_linking.go            # PR-to-issue linking logic
 │   │   ├── daily_updates.go         # Daily update check logic
+│   │   ├── async_standup.go         # Async standup thread logic
 │   │   └── weekly_dms.go            # Weekly DM distribution logic
 │   ├── config/
 │   │   └── config.go                # Configuration management
@@ -412,17 +499,21 @@ project-agent/
 │   ├── similarity/
 │   │   └── client.go                # Gemini AI similarity detector
 │   ├── discord/
-│   │   └── client.go                # Discord webhook client
+│   │   └── client.go                # Discord bot/webhook client
 │   └── parser/
 │       └── issue_refs.go            # Issue reference parser
 ├── .github/
 │   └── workflows/
 │       ├── triage-stale.yml         # Daily stale triage workflow
 │       ├── detect-duplicates.yml    # Weekly duplicate detection workflow
+│       ├── process-initiatives.yml  # Daily initiative processing workflow
 │       ├── check-daily-updates.yml  # Daily update check workflow
+│       ├── async-standup.yml        # Async standup workflow (Tue/Wed/Thu)
 │       ├── send-weekly-dms.yml      # Weekly DM distribution workflow
 │       ├── handle-pr-link.yml       # PR linking receiver (repository_dispatch)
 │       └── notify-pr-template.yml   # Template for org repos
+├── Makefile                         # Build automation
+├── CLAUDE.md                        # Instructions for Claude Code
 └── README.md
 ```
 
@@ -483,16 +574,21 @@ go test ./...
 
 ### Building
 ```bash
-# Build individual commands
+# Build all commands with Makefile
+make build
+
+# Or build individual commands
 go build -o bin/triage-stale cmd/triage-stale/main.go
 go build -o bin/detect-duplicates cmd/detect-duplicates/main.go
+go build -o bin/process-initiatives cmd/process-initiatives/main.go
 go build -o bin/link-pr cmd/link-pr/main.go
 go build -o bin/scan-open-prs cmd/scan-open-prs/main.go
 go build -o bin/check-daily-updates cmd/check-daily-updates/main.go
+go build -o bin/async-standup cmd/async-standup/main.go
 go build -o bin/send-weekly-dms cmd/send-weekly-dms/main.go
 go build -o bin/deploy-pr-workflow cmd/deploy-pr-workflow/main.go
 
-# Or build all
+# Or build all with shell loop
 mkdir -p bin
 for cmd in cmd/*/; do
   name=$(basename $cmd)

@@ -173,6 +173,23 @@ Follow the existing pattern in `cmd/*/main.go`:
 3. Create GitHub Actions workflow in `.github/workflows/my-task.yml`
 4. Task should accept `ctx`, relevant clients, issues, and `cfg` as parameters
 5. Task should check `cfg.DryRun` before any mutations
+6. **Update `Makefile`** - Add the new command to the `COMMANDS` variable (alphabetically sorted)
+7. **Update `README.md`** - Add the command to:
+   - The introductory list of features
+   - The "Features" section
+   - The "Running Locally" examples
+   - The "GitHub Actions Workflows" schedule list
+   - The "Project Structure" file tree
+   - The "Building" section
+   - Add a new subsection under "How It Works" explaining what the command does
+8. **Update `.env.example`** - If the command requires new environment variables:
+   - Add the new variables with example values
+   - Include comments explaining what each variable is for
+   - Include instructions on how to obtain the values (e.g., where to get API keys, IDs)
+9. **Update `internal/config/config.go`** - If new environment variables are needed:
+   - Add fields to the `Config` struct
+   - Load the variables in `LoadFromEnv()` function
+   - Set appropriate defaults for optional values
 
 ## Environment Variables
 
