@@ -28,6 +28,9 @@ jobs:
 
       - name: Create async standup thread
         env:
+          GITHUB_TOKEN: ${{ secrets.PROJECT_MAINTENANCE_TOKEN }}
+          GITHUB_ORG: storacha
+          PROJECT_NUMBER: 1
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_STANDUP_CHANNEL_ID: ${{ secrets.DISCORD_STANDUP_CHANNEL_ID }}
           DISCORD_STANDUP_ROLE_ID: ${{ secrets.DISCORD_STANDUP_ROLE_ID }}

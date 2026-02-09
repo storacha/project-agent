@@ -71,10 +71,8 @@ func LoadFromEnv() (*Config, error) {
 	}
 	cfg.ProjectNumber = projectNum
 
+	// Gemini AI is optional - only needed for similarity detection tasks
 	cfg.GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
-	if cfg.GeminiAPIKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY environment variable is required")
-	}
 
 	// Optional overrides
 	if thresholdStr := os.Getenv("STALENESS_THRESHOLD_DAYS"); thresholdStr != "" {

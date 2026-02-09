@@ -23,6 +23,11 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Validate required configuration for this command
+	if cfg.GeminiAPIKey == "" {
+		log.Fatal("GEMINI_API_KEY environment variable is required for duplicate detection")
+	}
+
 	// Create GitHub client
 	githubClient, err := github.NewClient(cfg.GithubToken, cfg.GithubOrg, cfg.ProjectNumber)
 	if err != nil {

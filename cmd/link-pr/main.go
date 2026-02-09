@@ -23,6 +23,11 @@ func main() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Validate required configuration for this command
+	if cfg.GeminiAPIKey == "" {
+		log.Fatal("GEMINI_API_KEY environment variable is required for PR linking")
+	}
+
 	// Get PR information from environment (passed from repository_dispatch event)
 	prRepo := os.Getenv("PR_REPO")
 	prNumberStr := os.Getenv("PR_NUMBER")
