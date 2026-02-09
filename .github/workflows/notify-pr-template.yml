@@ -3,6 +3,7 @@ name: Notify PR Event
 on:
   pull_request:
     types: [opened, edited]
+  workflow_dispatch:
 
 jobs:
   notify:

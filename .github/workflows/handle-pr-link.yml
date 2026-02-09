@@ -3,6 +3,7 @@ name: Handle PR Link
 on:
   repository_dispatch:
     types: [pr-event]
+  workflow_dispatch:
 
 jobs:
   link-pr:

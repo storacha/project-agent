@@ -1,9 +1,10 @@
 name: Detect Duplicate Issues
 
 on:
-  schedule:
+  #schedule:
     # Run weekly on Mondays at 10 AM UTC
-    - cron: '0 10 * * 1'
+    # Disabled for now until it's honed more effectively
+    # - cron: '0 10 * * 1'
   workflow_dispatch: # Allow manual triggering
 
 permissions:
