@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/shurcooL/githubv4"
+	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/oauth2"
 )
 
@@ -30,9 +32,9 @@ jobs:
         run: |
           curl -X POST \
             -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.PROJECT_AGENT_PAT }}" \
             https://api.github.com/repos/storacha/project-agent/dispatches \
-            -d "{\"event_type\":\"pr-event\",\"client_payload\":{\"pr_repo\":\"${{ github.repository }}\",\"pr_number\":${{ github.event.pull_request.number }},\"pr_title\":$(echo '${{ github.event.pull_request.title }}' | jq -Rs .),\"pr_body\":$(echo '${{ github.event.pull_request.body }}' | jq -Rs .)}}"
+            -d "{\"event_type\":\"pr-event\",\"client_payload\":{\"pr_repo\":\"${{ github.repository }}\",\"pr_number\":${{ github.event.pull_request.number }},\"pr_author\":\"${{ github.event.pull_request.user.login }}\",\"pr_title\":$(echo '${{ github.event.pull_request.title }}' | jq -Rs .),\"pr_body\":$(echo '${{ github.event.pull_request.body }}' | jq -Rs .)}}"
 `
 
 type Repository struct {
@@ -51,6 +53,11 @@ func main() {
 	githubToken := os.Getenv("GITHUB_TOKEN")
 	if githubToken == "" {
 		log.Fatal("GITHUB_TOKEN environment variable is required")
+	}
+
+	projectAgentPAT := os.Getenv("PROJECT_AGENT_PAT")
+	if projectAgentPAT == "" {
+		log.Fatal("PROJECT_AGENT_PAT environment variable is required (PAT for repository_dispatch events)")
 	}
 
 	org := os.Getenv("GITHUB_ORG")
@@ -136,9 +143,20 @@ func main() {
 		}
 
 		if dryRun {
+			log.Printf("  [DRY RUN] Would set PROJECT_AGENT_PAT secret\n")
 			log.Printf("  [DRY RUN] Would create workflow at %s\n", workflowPath)
 			deploymentCount++
 		} else {
+			// Set the PROJECT_AGENT_PAT secret first
+			log.Printf("  Setting PROJECT_AGENT_PAT secret...\n")
+			if err := setRepositorySecret(ctx, githubToken, org, repo.Name, "PROJECT_AGENT_PAT", projectAgentPAT); err != nil {
+				log.Printf("  ERROR: Failed to set secret: %v\n", err)
+				errorCount++
+				continue
+			}
+			log.Printf("  Successfully set secret\n")
+
+			// Then create the workflow file
 			if err := createWorkflowFile(ctx, githubToken, org, repo.Name, repo.DefaultBranch.Name, workflowPath); err != nil {
 				log.Printf("  ERROR: Failed to create workflow: %v\n", err)
 				errorCount++
@@ -231,4 +249,121 @@ func createWorkflowFile(ctx context.Context, token, owner, repo, branch, path st
 	}
 
 	return nil
+}
+
+type PublicKey struct {
+	KeyID string `json:"key_id"`
+	Key   string `json:"key"`
+}
+
+func setRepositorySecret(ctx context.Context, token, owner, repo, secretName, secretValue string) error {
+	// Step 1: Get the repository's public key
+	publicKey, err := getRepositoryPublicKey(ctx, token, owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	// Step 2: Encrypt the secret value
+	encryptedValue, err := encryptSecret(secretValue, publicKey.Key)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt secret: %w", err)
+	}
+
+	// Step 3: Set the encrypted secret
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/secrets/%s", owner, repo, secretName)
+
+	payload := map[string]interface{}{
+		"encrypted_value": encryptedValue,
+		"key_id":          publicKey.KeyID,
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func getRepositoryPublicKey(ctx context.Context, token, owner, repo string) (*PublicKey, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/secrets/public-key", owner, repo)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var publicKey PublicKey
+	if err := json.NewDecoder(resp.Body).Decode(&publicKey); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &publicKey, nil
+}
+
+func encryptSecret(secretValue, publicKeyStr string) (string, error) {
+	// Decode the public key from base64
+	publicKeyBytes, err := base64.StdEncoding.DecodeString(publicKeyStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode public key: %w", err)
+	}
+
+	// Convert to [32]byte for nacl/box
+	var publicKey [32]byte
+	copy(publicKey[:], publicKeyBytes)
+
+	// Encrypt using nacl/box (anonymous encryption)
+	// Generate ephemeral key pair
+	ephemeralPublic, ephemeralPrivate, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate ephemeral key: %w", err)
+	}
+
+	// Encrypt the secret
+	var nonce [24]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	encrypted := box.Seal(nonce[:], []byte(secretValue), &nonce, &publicKey, ephemeralPrivate)
+
+	// The result should be: ephemeral public key + encrypted data
+	result := append(ephemeralPublic[:], encrypted...)
+
+	// Encode to base64
+	return base64.StdEncoding.EncodeToString(result), nil
 }

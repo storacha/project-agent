@@ -27,6 +27,9 @@ type Repository struct {
 			Title  string
 			Body   string
 			State  string
+			Author struct {
+				Login string
+			}
 		}
 		PageInfo struct {
 			EndCursor   githubv4.String
@@ -38,6 +41,7 @@ type Repository struct {
 type ScanReport struct {
 	TotalRepos           int
 	TotalPRsScanned      int
+	TotalPRsSkipped      int
 	TotalIssuesLinked    int
 	TotalIssuesMoved     int
 	ReposWithErrors      int
@@ -124,7 +128,16 @@ func main() {
 
 		// Process each PR
 		for _, pr := range prs {
-			log.Printf("Processing PR #%d: %s\n", pr.Number, pr.Title)
+			// Check if author is in USER_MAPPINGS (only process PRs from team members)
+			if cfg.UserMappings != nil && pr.Author.Login != "" {
+				if _, found := cfg.UserMappings[pr.Author.Login]; !found {
+					log.Printf("Skipping PR #%d from external contributor: %s\n", pr.Number, pr.Author.Login)
+					scanReport.TotalPRsSkipped++
+					continue
+				}
+			}
+
+			log.Printf("Processing PR #%d: %s (author: %s)\n", pr.Number, pr.Title, pr.Author.Login)
 
 			// Run PR linking
 			report, err := tasks.LinkPRToIssues(ctx, githubClient, similarityClient,
@@ -206,6 +219,9 @@ func fetchOpenPRs(ctx context.Context, client *githubv4.Client, owner, repo stri
 	Title  string
 	Body   string
 	State  string
+	Author struct {
+		Login string
+	}
 }, error) {
 	var query struct {
 		Repository struct {
@@ -215,6 +231,9 @@ func fetchOpenPRs(ctx context.Context, client *githubv4.Client, owner, repo stri
 					Title  string
 					Body   string
 					State  string
+					Author struct {
+						Login string
+					}
 				}
 				PageInfo struct {
 					EndCursor   githubv4.String
@@ -235,6 +254,9 @@ func fetchOpenPRs(ctx context.Context, client *githubv4.Client, owner, repo stri
 		Title  string
 		Body   string
 		State  string
+		Author struct {
+			Login string
+		}
 	}
 
 	for {
@@ -265,7 +287,11 @@ func printSummaryReport(report *ScanReport, dryRun bool) {
 	}
 
 	fmt.Printf("Repositories scanned: %d\n", report.TotalRepos)
-	fmt.Printf("Total PRs processed: %d\n", report.TotalPRsScanned)
+	fmt.Printf("Total PRs found: %d\n", report.TotalPRsScanned)
+	if report.TotalPRsSkipped > 0 {
+		fmt.Printf("PRs skipped (external contributors): %d\n", report.TotalPRsSkipped)
+		fmt.Printf("PRs processed (team members): %d\n", report.TotalPRsScanned-report.TotalPRsSkipped)
+	}
 	fmt.Printf("Total issues linked: %d\n", report.TotalIssuesLinked)
 	fmt.Printf("Total issues moved to PR Review: %d\n", report.TotalIssuesMoved)
 

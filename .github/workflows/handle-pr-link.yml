@@ -25,8 +25,12 @@ jobs:
           PROJECT_NUMBER: 1
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DUPLICATE_SIMILARITY: 0.95
+          # Disable semantic matching for PR linking to reduce Gemini API usage and focus on direct references
+          SEMANTIC_MATCHING: "false"
           TARGET_STATUSES: "In Progress, Sprint Backlog"
+          USER_MAPPINGS: ${{ secrets.USER_MAPPINGS }}
           PR_REPO: ${{ github.event.client_payload.pr_repo }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          PR_AUTHOR: ${{ github.event.client_payload.pr_author }}
           PR_TITLE: ${{ github.event.client_payload.pr_title }}
           PR_BODY: ${{ github.event.client_payload.pr_body }}

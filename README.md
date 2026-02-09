@@ -213,7 +213,7 @@ The label allows you to:
 
 ### 3. PR-to-Issue Linking
 
-When a PR is opened or edited in any repository in your organization, the agent:
+When a PR is opened or edited in any repository in your organization, the agent first checks if the PR author is a team member (present in USER_MAPPINGS). External contributor PRs are skipped. For team member PRs, the agent:
 1. **Parses direct issue references** from PR title and body:
    - Simple references: `#123`
    - Keyword references: `fixes #123`, `closes #456`, `resolves #789`
@@ -234,9 +234,9 @@ When a PR is opened or edited in any repository in your organization, the agent:
 
 The agent uses a distributed workflow approach:
 1. Each repository in your organization has a lightweight workflow (`.github/workflows/notify-pr.yml`)
-2. When a PR is opened/edited, the workflow sends a `repository_dispatch` event to the `project-agent` repository
-3. The `project-agent` repository receives the event and runs the linking logic with all necessary secrets
-4. This approach means you only need to store secrets (GitHub token, Gemini API key) in one place
+2. When a PR is opened/edited, the workflow uses the `PROJECT_AGENT_PAT` secret to send a `repository_dispatch` event to the `project-agent` repository
+3. The `project-agent` repository receives the event and runs the linking logic with all necessary secrets (GitHub token, Gemini API key)
+4. This approach minimizes secret distribution - only the dispatch PAT is stored in each repo, while sensitive secrets remain centralized
 
 **Deploying to your repositories:**
 
@@ -244,7 +244,8 @@ Use the included deployment tool to add the workflow to all your repos:
 
 ```bash
 # Dry run (preview what would be deployed)
-export GITHUB_TOKEN="your-token"
+export GITHUB_TOKEN="your-admin-token"        # PAT with admin:org and repo scopes
+export PROJECT_AGENT_PAT="your-dispatch-token" # PAT with repo scope for repository_dispatch
 export GITHUB_ORG="storacha"
 export DRY_RUN="true"
 go run cmd/deploy-pr-workflow/main.go
@@ -258,6 +259,7 @@ The deployment tool will:
 - Find all repositories in your organization
 - Skip repositories that already have the workflow
 - Skip the `project-agent` repository itself
+- Set the `PROJECT_AGENT_PAT` secret in each repository (for cross-repo dispatch events)
 - Create `.github/workflows/notify-pr.yml` in each repository
 
 **Processing existing open PRs:**
@@ -270,6 +272,7 @@ export GITHUB_TOKEN="your-token"
 export GITHUB_ORG="storacha"
 export PROJECT_NUMBER="1"
 export GEMINI_API_KEY="your-key"
+export USER_MAPPINGS='{"alice":"123456789012345678","bob":"987654321098765432"}'
 export DRY_RUN="true"
 go run cmd/scan-open-prs/main.go
 
@@ -280,6 +283,7 @@ go run cmd/scan-open-prs/main.go
 
 The scan command will:
 - Find all open PRs across all repositories in your organization
+- Skip PRs from external contributors (only processes team members in USER_MAPPINGS)
 - Process each PR through the same linking logic
 - Link PRs to issues and move them to PR Review status
 - Provide a detailed summary report of all actions taken
@@ -510,8 +514,7 @@ project-agent/
 │       ├── check-daily-updates.yml  # Daily update check workflow
 │       ├── async-standup.yml        # Async standup workflow (Tue/Wed/Thu)
 │       ├── send-weekly-dms.yml      # Weekly DM distribution workflow
-│       ├── handle-pr-link.yml       # PR linking receiver (repository_dispatch)
-│       └── notify-pr-template.yml   # Template for org repos
+│       └── handle-pr-link.yml       # PR linking receiver (repository_dispatch)
 ├── Makefile                         # Build automation
 ├── CLAUDE.md                        # Instructions for Claude Code
 └── README.md

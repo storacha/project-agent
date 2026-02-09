@@ -57,9 +57,9 @@ func LinkPRToIssues(ctx context.Context, githubClient *github.Client, similarity
 
 	log.Printf("Found %d referenced issue(s) in the project\n", len(matchedIssues))
 
-	// Step 3: If no direct references, try semantic matching
+	// Step 3: If no direct references, try semantic matching (if enabled)
 	var semanticMatch *github.Issue
-	if len(matchedIssues) == 0 {
+	if len(matchedIssues) == 0 && cfg.SemanticMatching {
 		log.Println("No direct references found, attempting semantic matching...")
 
 		// Fetch issues with target statuses (In Progress, Sprint Backlog)
@@ -88,6 +88,8 @@ func LinkPRToIssues(ctx context.Context, githubClient *github.Client, similarity
 				log.Println("No semantic matches found above threshold")
 			}
 		}
+	} else if len(matchedIssues) == 0 && !cfg.SemanticMatching {
+		log.Println("No direct references found, and semantic matching is disabled")
 	}
 
 	// Step 4: Move matched issues to PR Review and create links

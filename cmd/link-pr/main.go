@@ -31,11 +31,27 @@ func main() {
 	// Get PR information from environment (passed from repository_dispatch event)
 	prRepo := os.Getenv("PR_REPO")
 	prNumberStr := os.Getenv("PR_NUMBER")
+	prAuthor := os.Getenv("PR_AUTHOR")
 	prTitle := os.Getenv("PR_TITLE")
 	prBody := os.Getenv("PR_BODY")
 
 	if prRepo == "" || prNumberStr == "" {
 		log.Fatalf("PR_REPO and PR_NUMBER environment variables are required")
+	}
+
+	// Check if author is in USER_MAPPINGS (only process PRs from team members)
+	if prAuthor != "" && cfg.UserMappings != nil {
+		if _, found := cfg.UserMappings[prAuthor]; !found {
+			log.Printf("Skipping PR from external contributor: %s", prAuthor)
+			fmt.Println("\n" + strings.Repeat("=", 60))
+			fmt.Println("PR LINKING SKIPPED")
+			fmt.Println(strings.Repeat("=", 60))
+			fmt.Printf("PR Author: %s\n", prAuthor)
+			fmt.Println("Reason: Author not in USER_MAPPINGS (external contributor)")
+			fmt.Println(strings.Repeat("=", 60))
+			return
+		}
+		log.Printf("PR author %s is a team member, proceeding with linking", prAuthor)
 	}
 
 	prNumber, err := strconv.Atoi(prNumberStr)

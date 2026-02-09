@@ -31,6 +31,7 @@ type Config struct {
 	// Agent behavior configuration
 	StalenessThresholdDays int
 	DuplicateSimilarity    float64
+	SemanticMatching       bool
 	DryRun                 bool
 	TargetStatuses         []string // Which statuses to analyze
 }
@@ -42,9 +43,10 @@ func LoadFromEnv() (*Config, error) {
 
 	cfg := &Config{
 		// Defaults
-		StalenessThresholdDays: 180, // 6 months
+		StalenessThresholdDays: 180,  // 6 months
 		DuplicateSimilarity:    0.85, // 85% similarity threshold
 		DailyUpdateThreshold:   3,    // 3 days
+		SemanticMatching:       true, // Enable semantic matching by default
 		DryRun:                 false,
 		TargetStatuses:         []string{"Inbox", "Backlog", "Sprint Backlog", "In Progress", "PR Review"},
 		UserMappings:           make(map[string]string),
@@ -93,6 +95,10 @@ func LoadFromEnv() (*Config, error) {
 
 	if dryRunStr := os.Getenv("DRY_RUN"); dryRunStr == "true" {
 		cfg.DryRun = true
+	}
+
+	if semanticMatchingStr := os.Getenv("SEMANTIC_MATCHING"); semanticMatchingStr == "false" {
+		cfg.SemanticMatching = false
 	}
 
 	if statusesStr := os.Getenv("TARGET_STATUSES"); statusesStr != "" {
